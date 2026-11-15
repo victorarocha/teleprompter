@@ -38,12 +38,26 @@ function useWakeLock() {
 }
 
 export default function DisplayPage() {
-  const { show, now } = useShow()
+  const { show, connected, now } = useShow()
   useWakeLock()
 
   return (
     <div className="fixed inset-0 cursor-none touch-none overflow-hidden overscroll-none bg-black">
       {show ? <Prompter show={show} now={now} /> : null}
+      <p
+        className={`pointer-events-none absolute bottom-14 left-4 z-30 text-sm ${
+          connected ? "text-green-500" : "text-red-500"
+        }`}
+      >
+        {connected ? "Connected" : "Disconnected"}
+      </p>
+      <button
+        type="button"
+        className="pointer-events-auto absolute right-4 bottom-4 z-30 cursor-pointer rounded border border-white/20 bg-black/70 px-2 py-1 text-xs text-white"
+        onClick={() => window.location.reload()}
+      >
+        Refresh
+      </button>
     </div>
   )
 }
