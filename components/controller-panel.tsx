@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
+import { useLocale, useTranslations } from "next-intl"
 
 import { Prompter } from "@/components/prompter"
 import { useControllerLease } from "@/components/use-controller-lease"
@@ -21,11 +23,16 @@ function useDraft(serverValue: string | null, fieldId: string) {
   return [draft, setDraft] as const
 }
 
-function statusLabel(show: Show, connected: boolean, at: number): string {
-  if (!connected) return "Reconnecting"
-  if (show.status === "paused") return "Paused"
-  if (countdownRemaining(show, at) != null) return "Countdown"
-  return "Playing"
+function statusLabel(
+  t: (key: "reconnecting" | "paused" | "countdown" | "playing") => string,
+  show: Show,
+  connected: boolean,
+  at: number,
+): string {
+  if (!connected) return t("reconnecting")
+  if (show.status === "paused") return t("paused")
+  if (countdownRemaining(show, at) != null) return t("countdown")
+  return t("playing")
 }
 
 function useControllerDrafts(
@@ -137,11 +144,12 @@ function PositionBar({
   }
   const sliderOffset = Math.min(pending ?? clampedLive, sliderMax > 0 ? sliderMax : 0)
   const progress = sliderMax > 0 ? Math.round((sliderOffset / sliderMax) * 100) : 0
+  const t = useTranslations("Controller")
 
   return (
     <label className="flex flex-col gap-2 text-sm text-zinc-300" htmlFor="position">
       <span className="flex items-center justify-between">
-        Position
+        {t("position")}
         <span className="text-zinc-400">{progress}%</span>
       </span>
       <input
@@ -156,7 +164,7 @@ function PositionBar({
         aria-valuemin={0}
         aria-valuemax={sliderMax}
         aria-valuenow={Math.round(sliderOffset)}
-        aria-valuetext={`${progress}% through the script`}
+        aria-valuetext={t("positionValue", { progress })}
         onPointerDown={() => {
           dragging.current = true
         }}
@@ -183,6 +191,7 @@ function TakeoverDialog({
   onCancel: () => void
 }) {
   const continueRef = useRef<HTMLButtonElement>(null)
+  const t = useTranslations("Controller")
 
   useEffect(() => {
     continueRef.current?.focus()
@@ -201,11 +210,10 @@ function TakeoverDialog({
         }}
       >
         <h2 id="takeover-title" className="text-lg font-semibold">
-          Another controller is connected
+          {t("takeoverTitle")}
         </h2>
         <p id="takeover-body" className="mt-2 text-sm text-zinc-300">
-          Another controller is already connected. If you continue, that controller will be
-          disconnected and this screen will be the only one that works.
+          {t("takeoverBody")}
         </p>
         <div className="mt-4 grid grid-cols-2 gap-2">
           <button
@@ -213,7 +221,7 @@ function TakeoverDialog({
             className="rounded-lg border border-white/15 px-3 py-3 text-base font-medium"
             onClick={onCancel}
           >
-            Cancel
+            {t("cancel")}
           </button>
           <button
             ref={continueRef}
@@ -221,7 +229,7 @@ function TakeoverDialog({
             className="rounded-lg bg-white px-3 py-3 text-base font-medium text-black"
             onClick={onContinue}
           >
-            Continue
+            {t("continue")}
           </button>
         </div>
       </div>
@@ -242,6 +250,9 @@ export function ControllerPanel() {
     confirmTakeover,
     cancelTakeover,
   } = useControllerLease()
+  const t = useTranslations("Controller")
+  const locale = useLocale()
+  const router = useRouter()
   const active = lease === "active"
   const { text, setText, speed, setSpeed, fontSize, setFontSize, ready } =
     useControllerDrafts(show, send, active)
@@ -266,11 +277,17 @@ export function ControllerPanel() {
 
   const label = !active
     ? lease === "checking"
-      ? "Connecting"
-      : "Inactive"
+      ? t("connecting")
+      : t("inactive")
     : show
-      ? statusLabel(show, connected, at)
-      : "Connecting"
+      ? statusLabel(t, show, connected, at)
+      : t("connecting")
+
+  function changeLocale(next: string) {
+    if (next !== "en" && next !== "es") return
+    document.cookie = `locale=${next}; Path=/; Max-Age=31536000; SameSite=Lax`
+    router.refresh()
+  }
 
   function run(action: ShowAction) {
     if (!active) return
@@ -280,46 +297,56 @@ export function ControllerPanel() {
   return (
     <main className="mx-auto flex w-full max-w-lg flex-col gap-4 px-4 py-4">
       <header className="flex items-center justify-between gap-3">
-        <h1 className="text-lg font-semibold">Controller</h1>
+        <h1 className="text-lg font-semibold">{t("title")}</h1>
+        <label htmlFor="language">
+          <span className="sr-only">{t("language")}</span>
+          <select
+            id="language"
+            className="rounded-lg border border-white/15 bg-zinc-950 px-2 py-1 text-sm text-white outline-none focus:border-white/40"
+            value={locale}
+            onChange={(event) => changeLocale(event.target.value)}
+          >
+            <option value="en">{t("english")}</option>
+            <option value="es">{t("spanish")}</option>
+          </select>
+        </label>
         <p className="text-sm text-zinc-400">{label}</p>
       </header>
 
       {unauthorized && (
         <p className="rounded-lg border border-red-400/40 bg-red-950/60 px-3 py-2 text-sm" role="alert">
-          The session expired.{" "}
-          <Link className="underline" href="/login">
-            Enter the password again
-          </Link>
-          .
+          {t.rich("sessionExpired", {
+            link: (chunks) => (
+              <Link className="underline" href="/login">
+                {chunks}
+              </Link>
+            ),
+          })}
         </p>
       )}
 
       {lease === "displaced" && (
         <div className="rounded-lg border border-white/15 bg-zinc-950 px-3 py-3 text-sm" role="alert">
-          <p>
-            {replaced
-              ? "This screen was disconnected because another controller took over."
-              : "This screen is not the active controller."}
-          </p>
+          <p>{replaced ? t("displaced") : t("notActive")}</p>
           <button
             type="button"
             className="mt-3 rounded-lg bg-white px-3 py-2 text-sm font-medium text-black"
             onClick={requestTakeover}
           >
-            Use this screen
+            {t("useThisScreen")}
           </button>
         </div>
       )}
 
       {lease === "inactive" && (
         <div className="rounded-lg border border-white/15 bg-zinc-950 px-3 py-3 text-sm" role="status">
-          <p>This screen is not the active controller.</p>
+          <p>{t("notActive")}</p>
           <button
             type="button"
             className="mt-3 rounded-lg bg-white px-3 py-2 text-sm font-medium text-black"
             onClick={requestTakeover}
           >
-            Use this screen
+            {t("useThisScreen")}
           </button>
         </div>
       )}
@@ -329,7 +356,7 @@ export function ControllerPanel() {
       )}
 
       <label className="flex flex-col gap-1 text-sm text-zinc-300" htmlFor="script">
-        Script
+        {t("script")}
         <textarea
           id="script"
           className="min-h-40 w-full resize-y rounded-lg border border-white/15 bg-zinc-950 px-3 py-2 text-base text-white outline-none focus:border-white/40"
@@ -342,7 +369,7 @@ export function ControllerPanel() {
 
       <div className="grid grid-cols-2 gap-3">
         <label className="flex flex-col gap-1 text-sm text-zinc-300" htmlFor="speed">
-          Speed (px/s)
+          {t("speed")}
           <input
             id="speed"
             className="rounded-lg border border-white/15 bg-zinc-950 px-3 py-2 text-base text-white outline-none focus:border-white/40"
@@ -357,7 +384,7 @@ export function ControllerPanel() {
           />
         </label>
         <label className="flex flex-col gap-1 text-sm text-zinc-300" htmlFor="font-size">
-          Text size (px)
+          {t("textSize")}
           <input
             id="font-size"
             className="rounded-lg border border-white/15 bg-zinc-950 px-3 py-2 text-base text-white outline-none focus:border-white/40"
@@ -380,8 +407,8 @@ export function ControllerPanel() {
         disabled={!controlsReady}
         onClick={() => run({ type: "mirrored", mirrored: !show?.mirrored })}
       >
-        Mirror
-        <span className="text-sm text-zinc-400">{show?.mirrored ? "On" : "Off"}</span>
+        {t("mirror")}
+        <span className="text-sm text-zinc-400">{show?.mirrored ? t("on") : t("off")}</span>
       </button>
 
       <PositionBar show={show} now={now} ready={controlsReady} extent={extent} send={send} />
@@ -393,7 +420,7 @@ export function ControllerPanel() {
           disabled={!controlsReady}
           onClick={() => run({ type: "play" })}
         >
-          Play
+          {t("play")}
         </button>
         <button
           type="button"
@@ -401,7 +428,7 @@ export function ControllerPanel() {
           disabled={!controlsReady}
           onClick={() => run({ type: "pause" })}
         >
-          Pause
+          {t("pause")}
         </button>
         <button
           type="button"
@@ -409,7 +436,7 @@ export function ControllerPanel() {
           disabled={!controlsReady}
           onClick={() => run({ type: "nudge", direction: -1 })}
         >
-          Rewind
+          {t("rewind")}
         </button>
         <button
           type="button"
@@ -417,7 +444,7 @@ export function ControllerPanel() {
           disabled={!controlsReady}
           onClick={() => run({ type: "nudge", direction: 1 })}
         >
-          Forward
+          {t("forward")}
         </button>
       </div>
 
@@ -427,11 +454,11 @@ export function ControllerPanel() {
         disabled={!controlsReady}
         onClick={() => run({ type: "reset" })}
       >
-        Reset
+        {t("reset")}
       </button>
 
       <section className="flex flex-col gap-2">
-        <h2 className="text-sm text-zinc-300">Live view</h2>
+        <h2 className="text-sm text-zinc-300">{t("liveView")}</h2>
         <div className="aspect-video overflow-hidden rounded-lg border border-white/10">
           {show ? (
             <Prompter show={show} now={now} onExtent={onExtent} />
