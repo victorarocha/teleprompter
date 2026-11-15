@@ -1,6 +1,6 @@
 import { connection } from "next/server"
 
-import { getShow, subscribe } from "@/lib/show-store"
+import { getControllerId, getLeaseVersion, getShow, subscribe } from "@/lib/show-store"
 
 export async function GET() {
   await connection()
@@ -11,7 +11,12 @@ export async function GET() {
   const stream = new ReadableStream({
     start(controller) {
       const send = () => {
-        const payload = JSON.stringify({ show: getShow(), serverNow: Date.now() })
+        const payload = JSON.stringify({
+          show: getShow(),
+          serverNow: Date.now(),
+          controllerId: getControllerId(),
+          leaseVersion: getLeaseVersion(),
+        })
         controller.enqueue(encoder.encode(`data: ${payload}\n\n`))
       }
 

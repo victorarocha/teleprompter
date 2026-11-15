@@ -2,7 +2,7 @@ import { cookies } from "next/headers"
 import { connection } from "next/server"
 
 import { isValidSession, SESSION_COOKIE } from "@/lib/auth"
-import { getShow, updateShow } from "@/lib/show-store"
+import { getShow, isControllerId, updateShow } from "@/lib/show-store"
 import { parseAction } from "@/lib/show-state"
 
 export async function GET() {
@@ -32,5 +32,15 @@ export async function PATCH(request: Request) {
     return Response.json({ error: "Invalid action" }, { status: 400 })
   }
 
-  return Response.json({ show: updateShow(action), serverNow: Date.now() })
+  const controllerId = request.headers.get("x-controller-id")
+  if (!isControllerId(controllerId)) {
+    return Response.json({ error: "controller-displaced" }, { status: 409 })
+  }
+
+  const show = updateShow(action, controllerId)
+  if (!show) {
+    return Response.json({ error: "controller-displaced" }, { status: 409 })
+  }
+
+  return Response.json({ show, serverNow: Date.now() })
 }

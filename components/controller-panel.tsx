@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import Link from "next/link"
 
 import { Prompter } from "@/components/prompter"
-import { useShow } from "@/components/use-show"
+import { useControllerLease } from "@/components/use-controller-lease"
 import { countdownRemaining, offsetAt, type Show, type ShowAction } from "@/lib/show-state"
 
 function fieldFocused(fieldId: string): boolean {
@@ -31,6 +31,7 @@ function statusLabel(show: Show, connected: boolean, at: number): string {
 function useControllerDrafts(
   show: Show | null,
   send: (action: ShowAction) => void,
+  enabled: boolean,
 ) {
   const [text, setText] = useDraft(show ? show.text : null, "script")
   const [speed, setSpeed] = useDraft(show ? String(show.speed) : null, "speed")
@@ -43,16 +44,16 @@ function useControllerDrafts(
   const sentFontSize = useRef<number | null>(null)
 
   useEffect(() => {
-    if (text == null || text === show?.text || text === sentText.current) return
+    if (!enabled || text == null || text === show?.text || text === sentText.current) return
     const id = setTimeout(() => {
       sentText.current = text
       void send({ type: "text", text })
     }, 200)
     return () => clearTimeout(id)
-  }, [text, show, send])
+  }, [enabled, text, show, send])
 
   useEffect(() => {
-    if (speed == null || speed.trim() === "" || !show) return
+    if (!enabled || speed == null || speed.trim() === "" || !show) return
     const parsed = Number(speed)
     if (!Number.isFinite(parsed) || parsed === show.speed || parsed === sentSpeed.current) {
       return
@@ -62,10 +63,10 @@ function useControllerDrafts(
       void send({ type: "speed", speed: parsed })
     }, 200)
     return () => clearTimeout(id)
-  }, [speed, show, send])
+  }, [enabled, speed, show, send])
 
   useEffect(() => {
-    if (fontSize == null || fontSize.trim() === "" || !show) return
+    if (!enabled || fontSize == null || fontSize.trim() === "" || !show) return
     const parsed = Number(fontSize)
     if (
       !Number.isFinite(parsed) ||
@@ -79,7 +80,7 @@ function useControllerDrafts(
       void send({ type: "fontSize", fontSize: parsed })
     }, 200)
     return () => clearTimeout(id)
-  }, [fontSize, show, send])
+  }, [enabled, fontSize, show, send])
 
   const ready = show != null && text != null && speed != null && fontSize != null
   return { text, setText, speed, setSpeed, fontSize, setFontSize, ready }
@@ -174,10 +175,77 @@ function PositionBar({
   )
 }
 
+function TakeoverDialog({
+  onContinue,
+  onCancel,
+}: {
+  onContinue: () => void
+  onCancel: () => void
+}) {
+  const continueRef = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    continueRef.current?.focus()
+  }, [])
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-end justify-center bg-black/70 px-4 py-6 sm:items-center">
+      <div
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="takeover-title"
+        aria-describedby="takeover-body"
+        className="w-full max-w-lg rounded-xl border border-white/15 bg-zinc-950 p-4"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") onCancel()
+        }}
+      >
+        <h2 id="takeover-title" className="text-lg font-semibold">
+          Another controller is connected
+        </h2>
+        <p id="takeover-body" className="mt-2 text-sm text-zinc-300">
+          Another controller is already connected. If you continue, that controller will be
+          disconnected and this screen will be the only one that works.
+        </p>
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            className="rounded-lg border border-white/15 px-3 py-3 text-base font-medium"
+            onClick={onCancel}
+          >
+            Cancel
+          </button>
+          <button
+            ref={continueRef}
+            type="button"
+            className="rounded-lg bg-white px-3 py-3 text-base font-medium text-black"
+            onClick={onContinue}
+          >
+            Continue
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function ControllerPanel() {
-  const { show, connected, unauthorized, now, send } = useShow()
+  const {
+    lease,
+    replaced,
+    show,
+    connected,
+    unauthorized,
+    now,
+    send,
+    requestTakeover,
+    confirmTakeover,
+    cancelTakeover,
+  } = useControllerLease()
+  const active = lease === "active"
   const { text, setText, speed, setSpeed, fontSize, setFontSize, ready } =
-    useControllerDrafts(show, send)
+    useControllerDrafts(show, send, active)
+  const controlsReady = ready && active
   const [at, setAt] = useState(0)
   const [extent, setExtent] = useState(0)
   const moving = show != null && show.status !== "paused"
@@ -196,9 +264,16 @@ export function ControllerPanel() {
     }
   }, [moving, now])
 
-  const label = show ? statusLabel(show, connected, at) : "Connecting"
+  const label = !active
+    ? lease === "checking"
+      ? "Connecting"
+      : "Inactive"
+    : show
+      ? statusLabel(show, connected, at)
+      : "Connecting"
 
   function run(action: ShowAction) {
+    if (!active) return
     void send(action)
   }
 
@@ -219,13 +294,47 @@ export function ControllerPanel() {
         </p>
       )}
 
+      {lease === "displaced" && (
+        <div className="rounded-lg border border-white/15 bg-zinc-950 px-3 py-3 text-sm" role="alert">
+          <p>
+            {replaced
+              ? "This screen was disconnected because another controller took over."
+              : "This screen is not the active controller."}
+          </p>
+          <button
+            type="button"
+            className="mt-3 rounded-lg bg-white px-3 py-2 text-sm font-medium text-black"
+            onClick={requestTakeover}
+          >
+            Use this screen
+          </button>
+        </div>
+      )}
+
+      {lease === "inactive" && (
+        <div className="rounded-lg border border-white/15 bg-zinc-950 px-3 py-3 text-sm" role="status">
+          <p>This screen is not the active controller.</p>
+          <button
+            type="button"
+            className="mt-3 rounded-lg bg-white px-3 py-2 text-sm font-medium text-black"
+            onClick={requestTakeover}
+          >
+            Use this screen
+          </button>
+        </div>
+      )}
+
+      {lease === "occupied" && (
+        <TakeoverDialog onContinue={confirmTakeover} onCancel={cancelTakeover} />
+      )}
+
       <label className="flex flex-col gap-1 text-sm text-zinc-300" htmlFor="script">
         Script
         <textarea
           id="script"
           className="min-h-40 w-full resize-y rounded-lg border border-white/15 bg-zinc-950 px-3 py-2 text-base text-white outline-none focus:border-white/40"
           value={text ?? ""}
-          disabled={!ready}
+          disabled={!controlsReady}
           spellCheck
           onChange={(event) => setText(event.target.value)}
         />
@@ -243,7 +352,7 @@ export function ControllerPanel() {
             step={1}
             type="number"
             value={speed ?? ""}
-            disabled={!ready}
+            disabled={!controlsReady}
             onChange={(event) => setSpeed(event.target.value)}
           />
         </label>
@@ -258,7 +367,7 @@ export function ControllerPanel() {
             step={1}
             type="number"
             value={fontSize ?? ""}
-            disabled={!ready}
+            disabled={!controlsReady}
             onChange={(event) => setFontSize(event.target.value)}
           />
         </label>
@@ -268,20 +377,20 @@ export function ControllerPanel() {
         type="button"
         className="flex items-center justify-between rounded-lg border border-white/15 px-3 py-3 text-left text-base disabled:opacity-50"
         aria-pressed={show?.mirrored ?? false}
-        disabled={!ready}
+        disabled={!controlsReady}
         onClick={() => run({ type: "mirrored", mirrored: !show?.mirrored })}
       >
         Mirror
         <span className="text-sm text-zinc-400">{show?.mirrored ? "On" : "Off"}</span>
       </button>
 
-      <PositionBar show={show} now={now} ready={ready} extent={extent} send={send} />
+      <PositionBar show={show} now={now} ready={controlsReady} extent={extent} send={send} />
 
       <div className="grid grid-cols-2 gap-2">
         <button
           type="button"
           className="rounded-lg bg-white px-3 py-3 text-base font-medium text-black disabled:opacity-50"
-          disabled={!ready}
+          disabled={!controlsReady}
           onClick={() => run({ type: "play" })}
         >
           Play
@@ -289,7 +398,7 @@ export function ControllerPanel() {
         <button
           type="button"
           className="rounded-lg border border-white/15 px-3 py-3 text-base font-medium disabled:opacity-50"
-          disabled={!ready}
+          disabled={!controlsReady}
           onClick={() => run({ type: "pause" })}
         >
           Pause
@@ -297,7 +406,7 @@ export function ControllerPanel() {
         <button
           type="button"
           className="rounded-lg border border-white/15 px-3 py-3 text-base font-medium disabled:opacity-50"
-          disabled={!ready}
+          disabled={!controlsReady}
           onClick={() => run({ type: "nudge", direction: -1 })}
         >
           Rewind
@@ -305,7 +414,7 @@ export function ControllerPanel() {
         <button
           type="button"
           className="rounded-lg border border-white/15 px-3 py-3 text-base font-medium disabled:opacity-50"
-          disabled={!ready}
+          disabled={!controlsReady}
           onClick={() => run({ type: "nudge", direction: 1 })}
         >
           Forward
@@ -315,7 +424,7 @@ export function ControllerPanel() {
       <button
         type="button"
         className="rounded-lg border border-white/15 px-3 py-3 text-base font-medium disabled:opacity-50"
-        disabled={!ready}
+        disabled={!controlsReady}
         onClick={() => run({ type: "reset" })}
       >
         Reset
