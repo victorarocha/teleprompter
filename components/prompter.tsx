@@ -1,9 +1,10 @@
 "use client"
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react"
+import { useLayoutEffect, useRef, useState } from "react"
 
 import {
   countdownRemaining,
+  COUNTDOWN_MS,
   LINE_HEIGHT,
   offsetAt,
   READING_LINE,
@@ -11,6 +12,20 @@ import {
   STAGE_WIDTH,
   type Show,
 } from "@/lib/show-state"
+
+// The animation clock keeps the last timestamp after pause. A sample from
+// before this play or countdown would rewind the script for a frame.
+function playbackInstant(show: Show, frameTime: number | null): number | null {
+  if (frameTime == null || show.status === "paused") return null
+  if (show.status === "playing") {
+    return show.playingSince != null && frameTime >= show.playingSince ? frameTime : null
+  }
+  if (show.status === "countdown" && show.countdownEndsAt != null) {
+    const startedAt = show.countdownEndsAt - COUNTDOWN_MS
+    return frameTime >= startedAt ? frameTime : null
+  }
+  return null
+}
 
 export function Prompter({
   show,
@@ -55,21 +70,21 @@ export function Prompter({
     return () => observer.disconnect()
   }, [onExtent, show.fontSize, show.text])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!moving) return
     let frame = 0
     const tick = () => {
       setFrameTime(now())
       frame = requestAnimationFrame(tick)
     }
-    frame = requestAnimationFrame(tick)
+    tick()
     return () => cancelAnimationFrame(frame)
   }, [moving, now])
 
   const anchor = STAGE_HEIGHT * READING_LINE
-  const offset =
-    frameTime == null || show.status === "paused" ? show.offsetPx : offsetAt(show, frameTime)
-  const countdown = frameTime == null ? null : countdownRemaining(show, frameTime)
+  const instant = playbackInstant(show, frameTime)
+  const offset = instant == null ? show.offsetPx : offsetAt(show, instant)
+  const countdown = instant == null ? null : countdownRemaining(show, instant)
 
   return (
     <div ref={frameRef} className="relative h-full w-full overflow-hidden bg-black">
