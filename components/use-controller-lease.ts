@@ -1,6 +1,8 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+import useSWR from "swr"
+import useSWRMutation from "swr/mutation"
 
 import { useShow, type ControllerHolder } from "@/components/use-show"
 
@@ -21,6 +23,26 @@ type ControllerCommand = {
   action: "claim" | "heartbeat" | "release"
   force?: boolean
   epoch?: number
+}
+
+type ClaimKey = readonly ["controller-claim", string, number, boolean]
+type HeartbeatKey = readonly ["controller-heartbeat", string, number]
+type ReleaseKey = readonly ["controller-release", string]
+
+type ClaimOutcome = {
+  epoch: number
+  kind: "active" | "occupied" | "inactive" | "unauthorized" | "stale"
+  leaseVersion: number
+}
+
+type ClaimTicket = {
+  force: boolean
+  n: number
+}
+
+type HeartbeatResult = {
+  status: number
+  serial: number
 }
 
 let cachedControllerId: string | null = null
@@ -54,11 +76,163 @@ function postController(body: ControllerCommand): Promise<Response> {
   })
 }
 
+async function fetchClaim(key: ClaimKey): Promise<ClaimOutcome> {
+  const [, id, , force] = key
+  const epoch = nextEpoch()
+  try {
+    const response = await postController({
+      id,
+      action: "claim",
+      force,
+      epoch,
+    })
+    if (currentEpoch() !== epoch) return { epoch, kind: "stale", leaseVersion: 0 }
+    if (response.status === 401) return { epoch, kind: "unauthorized", leaseVersion: 0 }
+    if (!response.ok) return { epoch, kind: "inactive", leaseVersion: 0 }
+    const data = (await response.json()) as ClaimResponse
+    if (currentEpoch() !== epoch) return { epoch, kind: "stale", leaseVersion: 0 }
+    if (data.status === "active") {
+      return {
+        epoch,
+        kind: "active",
+        leaseVersion: typeof data.leaseVersion === "number" ? data.leaseVersion : 0,
+      }
+    }
+    if (data.status === "occupied") return { epoch, kind: "occupied", leaseVersion: 0 }
+    return { epoch, kind: "inactive", leaseVersion: 0 }
+  } catch {
+    if (currentEpoch() !== epoch) return { epoch, kind: "stale", leaseVersion: 0 }
+    return { epoch, kind: "inactive", leaseVersion: 0 }
+  }
+}
+
+let heartbeatSerial = 0
+
+async function fetchHeartbeat(key: HeartbeatKey): Promise<HeartbeatResult> {
+  const serial = ++heartbeatSerial
+  try {
+    const response = await postController({ id: key[1], action: "heartbeat" })
+    return { status: response.status, serial }
+  } catch {
+    return { status: 0, serial }
+  }
+}
+
+function claimUpdate(outcome: ClaimOutcome): {
+  lease: ControllerLease
+  unauthorized: boolean
+  acked: number
+} | null {
+  if (outcome.kind === "stale" || outcome.epoch !== currentEpoch()) return null
+  if (outcome.kind === "unauthorized") {
+    return { lease: "inactive", unauthorized: true, acked: 0 }
+  }
+  if (outcome.kind === "active") {
+    return { lease: "active", unauthorized: false, acked: outcome.leaseVersion }
+  }
+  if (outcome.kind === "occupied") {
+    return { lease: "occupied", unauthorized: false, acked: 0 }
+  }
+  return { lease: "inactive", unauthorized: false, acked: 0 }
+}
+
+function applyResolvedClaim(
+  outcome: ClaimOutcome | undefined,
+  appliedEpoch: number,
+  setAppliedEpoch: (epoch: number) => void,
+  setLease: (lease: ControllerLease) => void,
+  setAcked: (acked: number) => void,
+  setReplaced: (replaced: boolean) => void,
+  setClaimUnauthorized: (unauthorized: boolean) => void,
+) {
+  if (!outcome || outcome.epoch === appliedEpoch) return
+  const claimChange = claimUpdate(outcome)
+  if (!claimChange) return
+  setAppliedEpoch(outcome.epoch)
+  setLease(claimChange.lease)
+  if (outcome.kind === "active") {
+    setAcked(claimChange.acked)
+    setReplaced(false)
+  }
+  if (claimChange.unauthorized) setClaimUnauthorized(true)
+}
+
+function applyHeartbeat(
+  beat: HeartbeatResult | undefined,
+  seenHeartbeat: number,
+  lease: ControllerLease,
+  setSeenHeartbeat: (serial: number) => void,
+  setLease: (lease: ControllerLease) => void,
+  setClaimUnauthorized: (unauthorized: boolean) => void,
+) {
+  if (!beat || beat.serial === seenHeartbeat || lease !== "active") return
+  if (beat.status !== 409 && beat.status !== 401) return
+  setSeenHeartbeat(beat.serial)
+  if (beat.status === 409) setLease("displaced")
+  if (beat.status === 401) setClaimUnauthorized(true)
+}
+
+function displaceIfActive(
+  leaseRef: { current: ControllerLease },
+  setLease: (lease: ControllerLease) => void,
+) {
+  if (leaseRef.current !== "active") return
+  leaseRef.current = "displaced"
+  setLease("displaced")
+}
+
+function acceptHolder(
+  holder: ControllerHolder,
+  ackedRef: { current: number },
+  idRef: { current: string | null },
+  leaseRef: { current: ControllerLease },
+  setReplaced: (replaced: boolean) => void,
+  setLease: (lease: ControllerLease) => void,
+) {
+  if (holder.version <= ackedRef.current || holder.id === idRef.current) return
+  if (holder.id != null) setReplaced(true)
+  displaceIfActive(leaseRef, setLease)
+}
+
+function releaseActiveLease(
+  leaseRef: { current: ControllerLease },
+  setLease: (lease: ControllerLease) => void,
+  release: (epoch: number) => Promise<unknown>,
+) {
+  if (leaseRef.current !== "active") return
+  leaseRef.current = "checking"
+  setLease("checking")
+  void release(currentEpoch()).catch(() => {
+    // A missed release expires with the lease.
+  })
+}
+
+function reclaimPersistedPage(event: PageTransitionEvent, reclaim: () => void) {
+  if (!event.persisted) return
+  reclaim()
+}
+
+async function releaseControllerLease(key: ReleaseKey, { arg: epoch }: { arg: number }) {
+  try {
+    await postController({
+      id: key[1],
+      action: "release",
+      epoch,
+    })
+  } catch {
+    // A missed release expires with the lease.
+  }
+}
+
 export function useControllerLease() {
   const [id, setId] = useState<string | null>(null)
   const [lease, setLease] = useState<ControllerLease>("checking")
   const [replaced, setReplaced] = useState(false)
   const [claimUnauthorized, setClaimUnauthorized] = useState(false)
+  const [claimTicket, setClaimTicket] = useState<ClaimTicket>({ force: false, n: 0 })
+  const [appliedEpoch, setAppliedEpoch] = useState(0)
+  const [acked, setAcked] = useState(0)
+  const [seenHeartbeat, setSeenHeartbeat] = useState(0)
   const leaseRef = useRef(lease)
   const idRef = useRef(id)
   const ackedRef = useRef(0)
@@ -69,17 +243,16 @@ export function useControllerLease() {
   }, [])
 
   const markDisplaced = useCallback(() => {
-    if (leaseRef.current !== "active") return
-    leaseRef.current = "displaced"
-    setLease("displaced")
+    displaceIfActive(leaseRef, setLease)
   }, [])
 
+  useLayoutEffect(() => {
+    leaseRef.current = lease
+    ackedRef.current = acked
+  }, [acked, lease])
+
   const onHolder = useCallback((holder: ControllerHolder) => {
-    if (holder.version <= ackedRef.current || holder.id === idRef.current) return
-    if (holder.id != null) setReplaced(true)
-    if (leaseRef.current !== "active") return
-    leaseRef.current = "displaced"
-    setLease("displaced")
+    acceptHolder(holder, ackedRef, idRef, leaseRef, setReplaced, setLease)
   }, [])
 
   const { show, connected, unauthorized, now, send } = useShow({
@@ -88,54 +261,36 @@ export function useControllerLease() {
     onHolder,
   })
 
-  const claim = useCallback(
-    async (force: boolean) => {
-      const controllerId = idRef.current
-      if (!controllerId) return
-      const epoch = nextEpoch()
-      let response: Response
-      try {
-        response = await postController({
-          id: controllerId,
-          action: "claim",
-          force,
-          epoch,
-        })
-      } catch {
-        if (currentEpoch() === epoch) commitLease("inactive")
-        return
-      }
-      if (currentEpoch() !== epoch) return
-      if (response.status === 401) {
-        setClaimUnauthorized(true)
-        commitLease("inactive")
-        return
-      }
-      if (!response.ok) {
-        commitLease("inactive")
-        return
-      }
-      let data: ClaimResponse
-      try {
-        data = (await response.json()) as ClaimResponse
-      } catch {
-        if (currentEpoch() === epoch) commitLease("inactive")
-        return
-      }
-      if (currentEpoch() !== epoch) return
-      if (data.status === "active") {
-        ackedRef.current = typeof data.leaseVersion === "number" ? data.leaseVersion : 0
-        setReplaced(false)
-        commitLease("active")
-        return
-      }
-      if (data.status === "occupied") {
-        commitLease("occupied")
-        return
-      }
-      commitLease("inactive")
-    },
-    [commitLease],
+  const claimKey = id
+    ? (["controller-claim", id, claimTicket.n, claimTicket.force] as const)
+    : null
+  const claim = useSWR(claimKey, fetchClaim, {
+    revalidateOnFocus: false,
+    revalidateOnReconnect: false,
+    revalidateIfStale: false,
+    shouldRetryOnError: false,
+    dedupingInterval: 2_000,
+  })
+
+  const heartbeatKey =
+    id && lease === "active"
+      ? (["controller-heartbeat", id, appliedEpoch] as const)
+      : null
+  const heartbeat = useSWR(heartbeatKey, fetchHeartbeat, {
+    refreshInterval: heartbeatKey ? HEARTBEAT_MS : 0,
+    refreshWhenHidden: true,
+    refreshWhenOffline: true,
+    revalidateOnMount: false,
+    revalidateIfStale: false,
+    revalidateOnFocus: false,
+    revalidateOnReconnect: false,
+    dedupingInterval: 1_000,
+    shouldRetryOnError: false,
+  })
+
+  const { trigger: releaseController } = useSWRMutation(
+    id ? (["controller-release", id] as const) : null,
+    releaseControllerLease,
   )
 
   useEffect(() => {
@@ -143,89 +298,35 @@ export function useControllerLease() {
     return () => clearTimeout(timer)
   }, [])
 
-  const commitLeaseRef = useRef(commitLease)
-  const claimRef = useRef(claim)
-  useEffect(() => {
-    commitLeaseRef.current = commitLease
-    claimRef.current = claim
-  }, [claim, commitLease])
-
   useEffect(() => {
     idRef.current = id
   }, [id])
 
-  useEffect(() => {
-    if (!id) return
-    const epoch = nextEpoch()
-    let ignore = false
-    void postController({ id, action: "claim", force: false, epoch })
-      .then(async (response) => {
-        if (ignore || currentEpoch() !== epoch) return
-        if (response.status === 401) {
-          setClaimUnauthorized(true)
-          commitLeaseRef.current("inactive")
-          return
-        }
-        if (!response.ok) {
-          commitLeaseRef.current("inactive")
-          return
-        }
-        const data = (await response.json()) as ClaimResponse
-        if (ignore || currentEpoch() !== epoch) return
-        if (data.status === "active") {
-          ackedRef.current = typeof data.leaseVersion === "number" ? data.leaseVersion : 0
-          setReplaced(false)
-          commitLeaseRef.current("active")
-          return
-        }
-        if (data.status === "occupied") {
-          commitLeaseRef.current("occupied")
-          return
-        }
-        commitLeaseRef.current("inactive")
-      })
-      .catch(() => {
-        if (ignore || currentEpoch() !== epoch) return
-        commitLeaseRef.current("inactive")
-      })
-    return () => {
-      ignore = true
-    }
-  }, [id])
+  const bumpClaim = useCallback((force: boolean) => {
+    setClaimTicket((ticket) => ({ force, n: ticket.n + 1 }))
+  }, [])
 
-  useEffect(() => {
-    if (lease !== "active" || !id) return
-    const beat = () => {
-      void postController({ id, action: "heartbeat" })
-        .then((response) => {
-          if (response.status === 409) markDisplaced()
-          if (response.status === 401) setClaimUnauthorized(true)
-        })
-        .catch(() => {
-          // The next heartbeat retries. The lease expires if they all fail.
-        })
-    }
-    const timer = setInterval(beat, HEARTBEAT_MS)
-    return () => clearInterval(timer)
-  }, [id, lease, markDisplaced])
+  const requestTakeover = useCallback(() => {
+    bumpClaim(false)
+  }, [bumpClaim])
+
+  const confirmTakeover = useCallback(() => {
+    bumpClaim(true)
+  }, [bumpClaim])
+
+  const cancelTakeover = useCallback(() => {
+    commitLease("inactive")
+  }, [commitLease])
 
   useEffect(() => {
     if (!id) return
     const release = () => {
-      if (leaseRef.current !== "active") return
-      leaseRef.current = "checking"
-      setLease("checking")
-      void postController({
-        id,
-        action: "release",
-        epoch: currentEpoch(),
-      }).catch(() => {
-        // A missed release expires with the lease.
-      })
+      releaseActiveLease(leaseRef, setLease, (epoch) =>
+        releaseController(epoch, { throwOnError: false }),
+      )
     }
     const onPageShow = (event: PageTransitionEvent) => {
-      if (!event.persisted) return
-      void claimRef.current(false)
+      reclaimPersistedPage(event, () => bumpClaim(false))
     }
     window.addEventListener("pagehide", release)
     window.addEventListener("pageshow", onPageShow)
@@ -233,19 +334,25 @@ export function useControllerLease() {
       window.removeEventListener("pagehide", release)
       window.removeEventListener("pageshow", onPageShow)
     }
-  }, [id])
+  }, [bumpClaim, id, releaseController])
 
-  const requestTakeover = useCallback(() => {
-    void claim(false)
-  }, [claim])
-
-  const confirmTakeover = useCallback(() => {
-    void claim(true)
-  }, [claim])
-
-  const cancelTakeover = useCallback(() => {
-    commitLease("inactive")
-  }, [commitLease])
+  applyResolvedClaim(
+    claim.data,
+    appliedEpoch,
+    setAppliedEpoch,
+    setLease,
+    setAcked,
+    setReplaced,
+    setClaimUnauthorized,
+  )
+  applyHeartbeat(
+    heartbeat.data,
+    seenHeartbeat,
+    lease,
+    setSeenHeartbeat,
+    setLease,
+    setClaimUnauthorized,
+  )
 
   return {
     lease,
