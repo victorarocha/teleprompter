@@ -1,7 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  // Phones and tablets open the dev server by LAN address, not localhost.
+  allowedDevOrigins: ["192.168.*.*", "10.*.*.*", "172.*.*.*"],
   experimental: {
     agentFeedback: true,
   },

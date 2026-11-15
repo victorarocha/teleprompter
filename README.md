@@ -1,36 +1,33 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Teleprompter
 
-## Getting Started
+A controller and a display that share one script. Run it on a computer you control. Open the controller on a phone and the display on a laptop or TV.
 
-First, run the development server:
+## Setup
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+pnpm install
+cp .env.example .env.local
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Set `TELEPROMPTER_PASSWORD` in `.env.local`. The controller asks for that password. The display does not. Anyone who can open the server can read the script on the display.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+pnpm dev
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+The server listens on every network interface. On this computer open [http://localhost:3000](http://localhost:3000). On a phone or tablet, open `http://<this-computer-ip>:3000`. Private LAN addresses are allowed while `pnpm dev` is running.
 
-## Learn More
+`pnpm build` then `pnpm start` runs the same server without hot reload.
 
-To learn more about Next.js, take a look at the following resources:
+The last script, text size, speed, mirror setting, and scroll position are stored in `data/show.json`.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Screens
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- **Controller** (`/controller`): script, speed in pixels per second (default 40), text size in pixels (default 42), mirror, play, pause, reset, rewind, forward, and a position bar. Play counts down from 3 when the script is at the top, then scrolls. Playing again after a pause continues at once. Rewind and forward jump about three lines. The position bar scrubs to any point in the script. The live view matches the display, including mirror.
+- **Display** (`/display`): the script, a reading line, and the countdown. No buttons.
 
-## Deploy on Vercel
+## Install
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Each screen has its own manifest. From the browser menu, install the controller on the phone and the display on the other device.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Install needs HTTPS, or `localhost`. A phone opening `http://192.168.x.x` can use the app in the browser, and can install it once the server is served over HTTPS.
