@@ -150,7 +150,7 @@ function PositionBar({
   send: (action: ShowAction) => void
 }) {
   const [at, setAt] = useState(0)
-  const [dragging, setDragging] = useState(false)
+  const dragging = useRef(false)
   const [pending, setPending] = useState<number | null>(null)
   const moving = show != null && show.status !== "paused"
 
@@ -165,20 +165,24 @@ function PositionBar({
     return () => cancelAnimationFrame(frame)
   }, [moving, now])
 
+  useEffect(() => {
+    if (
+      dragging.current ||
+      pending == null ||
+      show == null ||
+      Math.abs(show.offsetPx - pending) > 1
+    ) {
+      return
+    }
+    setPending(null)
+  }, [pending, show])
+
   const liveOffset = show == null ? 0 : at === 0 ? show.offsetPx : offsetAt(show, at)
   const sliderMax = Math.max(0, extent)
   const clampedLive = sliderMax > 0 ? Math.min(Math.max(0, liveOffset), sliderMax) : 0
-  if (
-    !dragging &&
-    pending != null &&
-    show != null &&
-    Math.abs(show.offsetPx - pending) <= 1
-  ) {
-    setPending(null)
-  }
 
   function endDrag() {
-    setDragging(false)
+    dragging.current = false
     setPending((current) =>
       current != null && show != null && Math.abs(show.offsetPx - current) <= 1
         ? null
@@ -209,7 +213,7 @@ function PositionBar({
         aria-valuenow={Math.round(sliderOffset)}
         aria-valuetext={t("positionValue", { progress })}
         onPointerDown={() => {
-          setDragging(true)
+          dragging.current = true
         }}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
