@@ -7,7 +7,6 @@ import {
   COUNTDOWN_MS,
   LINE_HEIGHT,
   offsetAt,
-  READING_LINE,
   STAGE_HEIGHT,
   STAGE_WIDTH,
   type Show,
@@ -31,10 +30,12 @@ export function Prompter({
   show,
   now,
   onExtent,
+  mirror = true,
 }: {
   show: Show
   now: () => number
   onExtent?: (extentPx: number) => void
+  mirror?: boolean
 }) {
   const frameRef = useRef<HTMLDivElement>(null)
   const textRef = useRef<HTMLDivElement>(null)
@@ -81,7 +82,7 @@ export function Prompter({
     return () => cancelAnimationFrame(frame)
   }, [moving, now])
 
-  const anchor = STAGE_HEIGHT * READING_LINE
+  const anchor = STAGE_HEIGHT * show.readingLine
   const instant = playbackInstant(show, frameTime)
   const offset = instant == null ? show.offsetPx : offsetAt(show, instant)
   const countdown = instant == null ? null : countdownRemaining(show, instant)
@@ -102,7 +103,7 @@ export function Prompter({
             className="pointer-events-none absolute inset-x-0 z-10 h-0.5 bg-white"
             style={{ top: anchor }}
           />
-          <div style={{ transform: show.mirrored ? "scaleX(-1)" : undefined }}>
+          <div style={{ transform: mirror && show.mirrored ? "scaleX(-1)" : undefined }}>
             <div
               ref={textRef}
               className="px-16 text-center font-semibold text-white select-none"

@@ -66,6 +66,10 @@ function getStore(): Store {
   const store = globalStore.__teleprompter
   if (store.controller === undefined) store.controller = null
   if (typeof store.leaseVersion !== "number") store.leaseVersion = 0
+  if (typeof store.show.readingLine !== "number") {
+    store.show = sanitizeShow(store.show)
+    persist(store.show)
+  }
   return store
 }
 

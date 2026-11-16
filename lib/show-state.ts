@@ -1,7 +1,9 @@
 export const LINE_HEIGHT = 1.35
 export const STAGE_WIDTH = 960
 export const STAGE_HEIGHT = 540
-export const READING_LINE = 0.2
+export const MIN_READING_LINE = 0
+export const MAX_READING_LINE = 1
+export const DEFAULT_READING_LINE = 0.7
 export const COUNTDOWN_MS = 3000
 export const NUDGE_LINES = 3
 export const DEFAULT_FONT_SIZE = 42
@@ -18,6 +20,7 @@ export type Show = {
   text: string
   fontSize: number
   speed: number
+  readingLine: number
   mirrored: boolean
   status: ShowStatus
   offsetPx: number
@@ -30,6 +33,7 @@ export type ShowAction =
   | { type: "text"; text: string }
   | { type: "fontSize"; fontSize: number }
   | { type: "speed"; speed: number }
+  | { type: "readingLine"; readingLine: number }
   | { type: "mirrored"; mirrored: boolean }
   | { type: "play" }
   | { type: "pause" }
@@ -42,6 +46,7 @@ export function defaultShow(now = Date.now()): Show {
     text: "",
     fontSize: DEFAULT_FONT_SIZE,
     speed: DEFAULT_SPEED,
+    readingLine: DEFAULT_READING_LINE,
     mirrored: false,
     status: "paused",
     offsetPx: 0,
@@ -90,6 +95,10 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
 }
 
+function roundReadingLine(value: number): number {
+  return Math.round(clamp(value, MIN_READING_LINE, MAX_READING_LINE) * 100) / 100
+}
+
 function finiteNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback
 }
@@ -115,6 +124,7 @@ export function sanitizeShow(input: unknown, now = Date.now()): Show {
       MAX_FONT_SIZE,
     ),
     speed: clamp(finiteNumber(raw.speed, DEFAULT_SPEED), MIN_SPEED, MAX_SPEED),
+    readingLine: roundReadingLine(finiteNumber(raw.readingLine, DEFAULT_READING_LINE)),
     mirrored: raw.mirrored === true,
     status,
     offsetPx: Math.max(0, finiteNumber(raw.offsetPx, 0)),
@@ -139,6 +149,10 @@ export function parseAction(input: unknown): ShowAction | null {
     case "speed":
       return typeof body.speed === "number" && Number.isFinite(body.speed)
         ? { type: "speed", speed: body.speed }
+        : null
+    case "readingLine":
+      return typeof body.readingLine === "number" && Number.isFinite(body.readingLine)
+        ? { type: "readingLine", readingLine: body.readingLine }
         : null
     case "mirrored":
       return typeof body.mirrored === "boolean"
@@ -185,6 +199,11 @@ export function applyAction(show: Show, action: ShowAction, now: number): Show {
         countdownEndsAt: null,
         updatedAt: now,
       }
+    }
+    case "readingLine": {
+      const readingLine = roundReadingLine(action.readingLine)
+      if (readingLine === show.readingLine) return show
+      return { ...show, readingLine, updatedAt: now }
     }
     case "mirrored": {
       if (action.mirrored === show.mirrored) return show
